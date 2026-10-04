@@ -1,0 +1,23 @@
+# Terraform / OpenTofu
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+
+# local variable overrides — may contain addresses or secrets
+*.auto.tfvars
+terraform.tfvars
+!*.tfvars.example
+
+# local resource overrides and CLI config — the CLI config can hold registry tokens
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# macOS
+.DS_Store
