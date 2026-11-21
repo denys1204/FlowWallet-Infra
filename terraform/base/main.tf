@@ -38,13 +38,14 @@ resource "proxmox_virtual_environment_vm" "template" {
     dedicated = 2048
   }
 
+  # No ssd flag: Proxmox has no such option for virtio disks and drops it, so
+  # setting it only produces a permanent diff.
   disk {
     datastore_id = var.vm_datastore
     import_from  = proxmox_download_file.debian.id
     interface    = "virtio0"
     size         = 20
     discard      = "on"
-    ssd          = true
   }
 
   initialization {
