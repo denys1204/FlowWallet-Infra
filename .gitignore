@@ -19,5 +19,11 @@ override.tf.json
 .terraformrc
 terraform.rc
 
+# kubeconfigs and API tokens live in ~/.kube and ~/.config, never in a checkout
+kubeconfig
+*.kubeconfig
+k3s.yaml
+*.token
+
 # macOS
 .DS_Store

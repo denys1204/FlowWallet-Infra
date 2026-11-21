@@ -1,0 +1,26 @@
+#!/bin/sh
+# Installs the pinned k3s release and refuses any file whose checksum differs
+# from the value committed in the repository. Runs once: a later cloud-init
+# re-run finds the marker and leaves the node alone, so it never upgrades k3s.
+set -eu
+
+marker=/var/lib/px-lab/k3s-installed
+[ -f "$marker" ] && exit 0
+
+version='${k3s_version}'
+tag=$(printf '%s' "$version" | sed 's/+/%2B/')
+work=$(mktemp -d)
+cd "$work"
+
+curl -fsSL --retry 5 -o k3s "https://github.com/k3s-io/k3s/releases/download/$tag/k3s"
+curl -fsSL --retry 5 -o install.sh "https://raw.githubusercontent.com/k3s-io/k3s/$tag/install.sh"
+echo '${k3s_sha256}  k3s' | sha256sum -c -
+echo '${k3s_install_sha256}  install.sh' | sha256sum -c -
+
+install -m 0755 k3s /usr/local/bin/k3s
+INSTALL_K3S_SKIP_DOWNLOAD=true INSTALL_K3S_EXEC=${role} sh install.sh
+
+mkdir -p "$(dirname "$marker")"
+k3s --version > "$marker"
+cd /
+rm -rf "$work"

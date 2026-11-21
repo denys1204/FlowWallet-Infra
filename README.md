@@ -2,23 +2,28 @@
 
 Infrastructure for the FlowWallet lab, a Proxmox homelab that runs
 [FlowWallet](https://github.com/denys1204/FlowWallet) with separate dev, stage and prod
-environments. This repository holds the OpenTofu code for the lab's virtual machines.
-The cluster bootstrap and the platform add-ons join it in later stages. Application
-manifests will live in a separate repository, FlowWallet-Config.
+environments. This repository holds the OpenTofu code for the lab's k3s clusters: the
+virtual machines and the k3s install on them. The bring-up script and the platform
+add-ons join it in later steps. Application manifests will live in a separate
+repository, FlowWallet-Config.
 
 ## Layout
 
 ```
-terraform/base/      cloud image + VM template, run rarely
-terraform/cluster/   k3s nodes, the destroy/rebuild target
+terraform/base/                  cloud image + VM template, run rarely
+terraform/modules/k3s-cluster/   one k3s cluster: VMs, cloud-init, the pinned k3s install
+terraform/clusters/<name>/       one root and one state per cluster: mgmt, dev, stage, prod
 ```
 
-The split is deliberate. Rebuilding the cluster from scratch is the checkpoint that
-proves the setup works, and it should not re-download a 300 MB image every time.
+The split is deliberate. Rebuilding a cluster from scratch is the checkpoint that proves
+the setup works. It should not re-download a 300 MB image every time, and rebuilding dev
+must never touch mgmt, which will run Argo CD.
 
-The cluster module describes the first design: one k3s cluster with a server and two
-agents. k3s itself is not installed on them yet. The next stage replaces this layout
-with four clusters: mgmt, dev, stage and prod.
+Each node installs a pinned k3s release on first boot. The cloud-init script checks the
+binary and `install.sh` against sha256 values committed in the module, and it never
+upgrades a node that already runs k3s. The server generates its own server token, which
+stays on the node. Agents join with a separate agent token, one per cluster. That token
+is the only k3s secret OpenTofu knows.
 
 ## Credentials
 
@@ -26,7 +31,7 @@ Nothing authenticating lives in this repository. The provider reads
 `PROXMOX_VE_ENDPOINT`, `PROXMOX_VE_API_TOKEN` and `PROXMOX_VE_INSECURE` from the
 environment, kept in `~/.config/proxmox/tf.env` outside any checkout.
 
-The cluster module also uploads its cloud-init snippets to the node over SSH, because
+The cluster roots also upload their cloud-init snippets to the node over SSH, because
 the Proxmox API cannot upload snippets. The key is passphrase-protected, so load it
 into the agent before running anything:
 
@@ -37,25 +42,32 @@ source ~/.config/proxmox/tf.env
 
 ## State
 
-Each module keeps its state in a local `terraform.tfstate`. The file is gitignored and
+Each root keeps its state in a local `terraform.tfstate`. The file is gitignored and
 there is no remote backend yet, so these files are the only record of what exists on
 Proxmox. Back them up before moving or cleaning this folder. If they are lost, the VMs
 keep running but OpenTofu no longer tracks them, and `tofu import` is the way back.
 
+The provider stores the snippet content in the state in plain text. The snippets carry
+the agent token, so the state files and their backups stay out of git and off shared
+storage.
+
 ## Usage
 
 ```sh
-cd terraform/base    && tofu init && tofu apply    # once
-cd terraform/cluster && tofu init && tofu apply    # as often as needed
+cd terraform/base         && tofu init && tofu apply   # once
+cd terraform/clusters/dev && tofu init && tofu apply   # per cluster, as often as needed
 ```
 
 ## Network
 
 Nodes live on `10.2.0.0/24`, an isolated bridge that cannot open connections into
-the home network. VM ids mirror the addresses: `211` is `10.2.0.11`.
+the home network. VM ids mirror the addresses: `221` is `10.2.0.21`. Each cluster has
+its own pod and service ranges, so addresses never overlap between clusters.
 
-| Host           | Address     | vCPU | RAM  |
-|----------------|-------------|------|------|
-| k3s-server-1   | 10.2.0.11   | 2    | 4 GB |
-| k3s-agent-1    | 10.2.0.12   | 4    | 6 GB |
-| k3s-agent-2    | 10.2.0.13   | 4    | 6 GB |
+| Cluster | Host        | Address   | Role   | vCPU | RAM  | Pods          | Services      |
+|---------|-------------|-----------|--------|------|------|---------------|---------------|
+| mgmt    | k3s-mgmt-1  | 10.2.0.11 | server | 2    | 3 GB | 10.110.0.0/16 | 10.111.0.0/16 |
+| dev     | k3s-dev-1   | 10.2.0.21 | server | 4    | 4 GB | 10.120.0.0/16 | 10.121.0.0/16 |
+| dev     | k3s-dev-2   | 10.2.0.22 | agent  | 4    | 3 GB |               |               |
+| stage   | k3s-stage-1 | 10.2.0.31 | server | 4    | 4 GB | 10.130.0.0/16 | 10.131.0.0/16 |
+| prod    | k3s-prod-1  | 10.2.0.41 | server | 4    | 4 GB | 10.140.0.0/16 | 10.141.0.0/16 |

@@ -1,13 +1,15 @@
 # FlowWallet-Infra
 
 OpenTofu for the FlowWallet Proxmox lab. `terraform/base` downloads the Debian 13 cloud image and builds VM
-template 9000; it runs rarely. `terraform/cluster` clones the k3s nodes from that template and is the
-destroy/rebuild target. Later stages add `bootstrap/` (k3s, Argo CD) and `platform/` (the app-of-apps for cluster
-add-ons). Application manifests belong in FlowWallet-Config, not here.
+template 9000; it runs rarely. `terraform/modules/k3s-cluster` describes one k3s cluster, and
+`terraform/clusters/{mgmt,dev,stage,prod}` are its four roots, one state each; each root is a destroy/rebuild
+target on its own. Later stages add `bootstrap/` (the bring-up script) and `platform/` (cluster add-ons).
+Application manifests belong in FlowWallet-Config, not here.
 
 ## The state files have no second copy
 
-`terraform.tfstate` and `terraform.tfstate.backup` in both modules are the only record of what exists on Proxmox.
+`terraform.tfstate` and `terraform.tfstate.backup` in `terraform/base` and in each `terraform/clusters/<name>`
+root are the only record of what exists on Proxmox.
 They are gitignored and there is no remote backend.
 
 - Never delete, move or hand-edit them.
@@ -19,7 +21,7 @@ They are gitignored and there is no remote backend.
 
 - Credentials come from `~/.config/proxmox/tf.env` (`PROXMOX_VE_*`), outside any checkout. Never copy their values
   into this repository.
-- The cluster module uploads its cloud-init snippets over SSH, since the Proxmox API cannot upload snippets, and
+- The cluster roots upload their cloud-init snippets over SSH, since the Proxmox API cannot upload snippets, and
   the key has a passphrase. Run `ssh-add --apple-use-keychain ~/.ssh/id_ed25519` first, or the SSH step hangs.
 - `bpg/proxmox` is pinned to an exact version in `versions.tf` and the lock files. Upgrade it in a change of its
   own, after a state backup.
@@ -29,6 +31,7 @@ They are gitignored and there is no remote backend.
 - Conventional commits (`feat:`, `fix:`, `chore:`, `ci:`, `docs:`), as in FlowWallet.
 - Nothing authenticating goes into git: no tokens, keys, real `terraform.tfvars` or state. CI runs gitleaks over
   the whole history.
-- The cluster module holds the first single-cluster design (one server, two agents), which is what runs on
-  Proxmox. The next stage reshapes the `nodes` map in `terraform/cluster/variables.tf` into four clusters: mgmt,
-  dev, stage and prod.
+- The k3s install is pinned in the module: `k3s_version` plus the sha256 of the binary and of `install.sh` at that
+  tag. Bump all three together, in a change of their own.
+- The provider stores snippet content in the state in plain text. The agent token is the only secret allowed in
+  cloud-init; anything else secret reaches the cluster another way.

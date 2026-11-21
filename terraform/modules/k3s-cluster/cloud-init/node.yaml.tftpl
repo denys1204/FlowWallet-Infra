@@ -1,0 +1,44 @@
+#cloud-config
+hostname: ${hostname}
+manage_etc_hosts: true
+timezone: ${timezone}
+
+users:
+  - name: ${username}
+    groups: [ sudo ]
+    shell: /bin/bash
+    sudo: 'ALL=(ALL) NOPASSWD:ALL'
+    ssh_authorized_keys:
+      - ${ssh_key}
+
+# Password login stays off; the injected key is the only way in.
+ssh_pwauth: false
+disable_root: true
+
+package_update: true
+packages:
+  - qemu-guest-agent
+  - curl
+
+write_files:
+  # Holds the agent token, hence 0600.
+  - path: /etc/rancher/k3s/config.yaml
+    permissions: '0600'
+    content: |
+      ${indent(6, k3s_config)}
+%{ if role == "server" ~}
+  - path: /var/lib/rancher/k3s/server/psa.yaml
+    permissions: '0600'
+    content: |
+      ${indent(6, psa_config)}
+%{ endif ~}
+  - path: /usr/local/sbin/px-k3s-install
+    permissions: '0700'
+    content: |
+      ${indent(6, install_script)}
+
+# A failed checksum or install leaves `cloud-init status` at error, which is
+# how a bring-up script notices.
+runcmd:
+  - systemctl enable --now qemu-guest-agent
+  - /usr/local/sbin/px-k3s-install

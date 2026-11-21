@@ -8,11 +8,16 @@ terraform {
       source  = "bpg/proxmox"
       version = "0.111.1"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "3.9.1"
+    }
   }
 }
 
 # Endpoint, API token and TLS behaviour come from PROXMOX_VE_* environment
-# variables, so no credential ever appears in this repository.
+# variables, so no credential ever appears in this repository. SSH is only used
+# to upload the cloud-init snippets.
 provider "proxmox" {
   ssh {
     agent    = true
