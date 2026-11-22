@@ -8,6 +8,13 @@ on:
 permissions:
   contents: read
 
+# An explicit shell makes GitHub run every step with `bash -eo pipefail`; the
+# default for an unnamed shell has no pipefail, so a failing command inside a
+# pipeline would go unnoticed.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   fmt:
     runs-on: ubuntu-latest
@@ -136,13 +143,16 @@ jobs:
           tofu init -backend=false -input=false -lockfile=readonly
           tofu test
 
+      # Rendered in an empty configuration: a cluster root would also evaluate the
+      # module's SSH key lookup, and the runner has no key.
       - name: Shellcheck the rendered install script
-        working-directory: terraform/clusters/dev
         run: |
-          tofu init -backend=false -input=false -lockfile=readonly
+          template="$GITHUB_WORKSPACE/terraform/modules/k3s-cluster/cloud-init/px-k3s-install.sh.tftpl"
+          mkdir -p "$RUNNER_TEMP/render"
           for role in server agent; do
-            echo "jsonencode(templatefile(\"../../modules/k3s-cluster/cloud-init/px-k3s-install.sh.tftpl\", { role = \"$role\", k3s_version = \"v1.36.6+k3s1\", k3s_sha256 = \"0\", k3s_install_sha256 = \"0\" }))" \
-              | tofu console | jq -r . | jq -r . > "$RUNNER_TEMP/install-$role.sh"
+            echo "jsonencode(templatefile(\"$template\", { role = \"$role\", k3s_version = \"v1.36.6+k3s1\", k3s_sha256 = \"0\", k3s_install_sha256 = \"0\" }))" \
+              | tofu -chdir="$RUNNER_TEMP/render" console | jq -r . | jq -r . > "$RUNNER_TEMP/install-$role.sh"
+            head -n 1 "$RUNNER_TEMP/install-$role.sh" | grep -qx '#!/bin/sh'
             shellcheck "$RUNNER_TEMP/install-$role.sh"
           done
 
