@@ -119,6 +119,13 @@ the same shape.
    `*.<cluster>.lab.px-lab.org` from the issuer named in `values-<cluster>.yaml`. The
    issuers carry no ACME email, because the repository is public.
 
+Each cluster's issuer is set in `platform/cluster-tls/values-<cluster>.yaml`, and all four
+use `letsencrypt-prod`. Let's Encrypt issues at most five certificates for the same set
+of names in seven days, and every rebuild of a cluster asks for a new one. Before several
+rebuilds of one cluster in the same week, switch its issuer to `letsencrypt-staging`, then
+back. `lab.sh verify` calls the cluster with `curl -k` only while its certificate comes
+from staging.
+
 Applications need no certificate objects of their own: an Ingress for a name under
 `*.<cluster>.lab.px-lab.org` gets the wildcard certificate from Traefik. Application
 manifests use the standard Ingress resource, not Traefik's own CRDs, so the ingress

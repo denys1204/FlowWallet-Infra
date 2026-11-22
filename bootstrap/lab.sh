@@ -371,8 +371,15 @@ verify_ingress() {
         *"DNS:*.$CLUSTER.$LAB_DOMAIN"*) ok "port 443 serves the wildcard for *.$CLUSTER.$LAB_DOMAIN ($issuer)" ;;
         *) bad "port 443 does not serve the wildcard certificate ($issuer)" ;;
     esac
-    # A staging certificate is not trusted by design; production ones must pass curl's normal checks.
-    case "$issuer" in *STAGING*) insecure="-k" ;; esac
+    # The served certificate must come from the configured issuer. A staging certificate is not trusted by
+    # design, so only then does curl get -k; a production one must pass curl's normal checks.
+    want=$(wanted_issuer)
+    case "$want:$issuer" in
+        letsencrypt-staging:*STAGING*) insecure="-k"; ok "the certificate comes from $want, as configured" ;;
+        letsencrypt-prod:*STAGING*) insecure="-k"; bad "values-$CLUSTER.yaml asks for $want, but port 443 still serves a staging certificate" ;;
+        letsencrypt-prod:*"Let's Encrypt"*) ok "the certificate comes from $want, as configured" ;;
+        *) bad "cannot match the served issuer ($issuer) with $want" ;;
+    esac
 
     sed "s/CLUSTER/$CLUSTER/g" "$PLATFORM_DIR/smoke/whoami.yaml" | kc apply -f - > /dev/null
     if kc -n smoke rollout status deploy/whoami --timeout=120s > /dev/null 2>&1; then
@@ -488,10 +495,28 @@ cmd_platform() {
     kc wait --for=condition=Ready clusterissuer --all --timeout=180s > /dev/null \
         || die "the ClusterIssuers did not become Ready (ACME account registration with Let's Encrypt)"
     ok "ClusterIssuers Ready"
-    # DNS-01 through Cloudflare and Let's Encrypt; a first issuance takes one to two minutes
-    kc -n traefik wait --for=condition=Ready certificate/wildcard --timeout=300s > /dev/null \
-        || die "the wildcard certificate is not Ready (kubectl -n traefik describe certificate wildcard)"
-    ok "wildcard certificate *.$CLUSTER.$LAB_DOMAIN Ready"
+    # Wait until the Secret holds a certificate from the configured issuer. Waiting for Ready alone is not
+    # enough after an issuer change: the old certificate keeps the condition True for a moment.
+    # DNS-01 through Cloudflare and Let's Encrypt; an issuance takes one to two minutes.
+    local issuer deadline=$((SECONDS + 300)) got ready
+    issuer=$(wanted_issuer)
+    while :; do
+        got=$(kc -n traefik get secret wildcard-tls -o jsonpath='{.metadata.annotations.cert-manager\.io/issuer-name}' 2> /dev/null || true)
+        ready=$(kc -n traefik get certificate wildcard -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2> /dev/null || true)
+        [ "$got" = "$issuer" ] && [ "$ready" = "True" ] && break
+        [ "$SECONDS" -lt "$deadline" ] \
+            || die "no Ready wildcard certificate from $issuer after 300 s (kubectl -n traefik describe certificate wildcard)"
+        sleep 5
+    done
+    ok "wildcard certificate *.$CLUSTER.$LAB_DOMAIN Ready, issued by $issuer"
+}
+
+# The issuer of the cluster's wildcard certificate, as configured in values-<cluster>.yaml.
+wanted_issuer() {
+    local issuer
+    issuer=$(sed -n 's/^issuer: *//p' "$PLATFORM_DIR/cluster-tls/values-$CLUSTER.yaml")
+    [ -n "$issuer" ] || issuer=$(sed -n 's/^issuer: *//p' "$PLATFORM_DIR/cluster-tls/values.yaml")
+    printf '%s\n' "$issuer"
 }
 
 cmd_up() {
