@@ -3,8 +3,8 @@
 OpenTofu for the FlowWallet Proxmox lab. `terraform/base` downloads the Debian 13 cloud image and builds VM
 template 9000; it runs rarely. `terraform/modules/k3s-cluster` describes one k3s cluster, and
 `terraform/clusters/{mgmt,dev,stage,prod}` are its four roots, one state each; each root is a destroy/rebuild
-target on its own. `bootstrap/lab.sh` brings one cluster up, checks it and rebuilds it; a later step adds
-`platform/` (cluster add-ons).
+target on its own. `bootstrap/lab.sh` brings one cluster up, checks it and rebuilds it; `platform/` holds the
+cluster add-ons it installs with Helm.
 Application manifests belong in FlowWallet-Config, not here.
 
 ## The state files have no second copy
@@ -41,3 +41,8 @@ They are gitignored and there is no remote backend.
 - Every cluster root re-exports the same outputs, and `lab.sh` reads only those. Change them in the module and in
   all four roots together; `.github/scripts/check-cluster-roots.py` checks ids, addresses and networks across the
   roots.
+- `lab.sh platform` installs the charts in `platform/` now, and Argo CD will install them from stage 2, so keep their
+  paths, release names and namespaces stable. Chart versions are pinned in `Chart.yaml` and `Chart.lock`; the
+  downloaded `platform/*/charts/` stay out of git.
+- The Cloudflare tokens live only in `~/.config/px-lab/cloudflare/`. `lab.sh` copies them into the cluster as a
+  Secret; never print them or write them into a file in the repository.

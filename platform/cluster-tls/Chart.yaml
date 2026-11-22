@@ -1,0 +1,7 @@
+# The cluster's own TLS objects: the Let's Encrypt issuers now, the wildcard
+# certificate in a later step. Installed after cert-manager, which owns the CRDs.
+apiVersion: v2
+name: cluster-tls
+description: Let's Encrypt issuers (and later the wildcard certificate) of one px-lab cluster
+type: application
+version: 1.0.0

@@ -1,0 +1,10 @@
+# cert-manager runs under the restricted Pod Security profile, stricter than the
+# cluster-wide baseline. The label lives in git, so the stricter rule is visible
+# in review and reapplied on every bring-up.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

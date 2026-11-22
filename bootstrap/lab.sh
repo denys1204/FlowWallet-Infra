@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # Brings up, checks, tears down and rebuilds one k3s cluster of the lab.
 #
-#   bootstrap/lab.sh up|down|rebuild|kubeconfig|verify|backup <mgmt|dev|stage|prod>
+#   bootstrap/lab.sh up|down|rebuild|kubeconfig|platform|verify|backup <mgmt|dev|stage|prod>
 #
 #   backup      copy the cluster's state files to the backup folder and compare them
-#   up          backup, tofu apply, wait for cloud-init and Ready nodes, fetch the kubeconfig, verify
+#   up          backup, tofu apply, wait for cloud-init and Ready nodes, kubeconfig, platform, verify
 #   kubeconfig  fetch the cluster's kubeconfig into ~/.kube/px-lab/<cluster>.yaml (context px-<cluster>)
+#   platform    install the add-ons from platform/ with helm (Argo CD takes this over in stage 2)
 #   verify      check a running cluster; exits non-zero if any check fails
 #   down        ask for the cluster name, backup, tofu destroy, drop the kubeconfig and host keys
 #   rebuild     down, then up; `time bootstrap/lab.sh rebuild dev` is the rebuild drill
 #
 # OpenTofu keeps its own apply and destroy prompt. The state files are the only record of what
 # exists on Proxmox, so they are copied and compared before every apply and destroy.
-# Needs: tofu, kubectl, jq, ssh with ~/.ssh/id_ed25519 loaded into the agent, and the Proxmox
-# credentials in ~/.config/proxmox/tf.env (read here when PROXMOX_VE_ENDPOINT is not set).
+# Needs: tofu, kubectl, helm, jq, python3, ~/.ssh/id_ed25519 with its passphrase in the Keychain, the
+# Proxmox credentials in ~/.config/proxmox/tf.env (read here when PROXMOX_VE_ENDPOINT is not set) and the
+# Cloudflare tokens in ~/.config/px-lab/cloudflare/{prod,nonprod}.token (prod for prod, nonprod for the rest).
 
 # ok() always succeeds, so the `test && ok || bad` lines below never run both branches.
 # shellcheck disable=SC2015
@@ -26,6 +28,8 @@ KUBE_DIR="$HOME/.kube/px-lab"
 KNOWN_HOSTS="$KUBE_DIR/known_hosts"
 BACKUP_ROOT="$HOME/Documents/Backups/flowwallet-infra-state"
 TF_ENV="$HOME/.config/proxmox/tf.env"
+CF_TOKEN_DIR="$HOME/.config/px-lab/cloudflare"
+PLATFORM_DIR="$REPO_ROOT/platform"
 SSH_TIMEOUT=300     # seconds for a new VM to answer on ssh
 READY_TIMEOUT=600   # seconds for every node to report Ready after cloud-init
 
@@ -35,6 +39,15 @@ FORBIDDEN_TARGETS="10.1.0.2:22 10.1.0.2:8006 10.1.0.6:53 10.1.0.7:81 10.1.0.10:2
 CLUSTER=""
 ROOT=""
 FAILED=0
+AGENT_STARTED=0
+TOKEN_TMP=""
+
+# Runs on every exit: stops the private ssh-agent and removes the token copy, whatever failed.
+cleanup() {
+    [ -z "$TOKEN_TMP" ] || rm -f "$TOKEN_TMP"
+    [ "$AGENT_STARTED" -eq 0 ] || ssh-agent -k > /dev/null 2>&1 || true
+}
+trap cleanup EXIT
 
 die() { printf 'lab.sh: %s\n' "$*" >&2; exit 1; }
 step() { printf '\n==> %s\n' "$*"; }
@@ -42,7 +55,7 @@ ok() { printf '    ok    %s\n' "$*"; }
 bad() { printf '    FAIL  %s\n' "$*"; FAILED=$((FAILED + 1)); }
 
 usage() {
-    sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
 }
 
@@ -74,7 +87,7 @@ load_env() {
 # from the macOS Keychain, and stops it on exit.
 start_private_agent() {
     eval "$(ssh-agent -s)" > /dev/null
-    trap 'ssh-agent -k > /dev/null 2>&1' EXIT
+    AGENT_STARTED=1
     ssh-add --apple-use-keychain "$SSH_KEY" < /dev/null > /dev/null 2>&1 \
         || die "cannot load $SSH_KEY without a prompt; store its passphrase once: ssh-add --apple-use-keychain $SSH_KEY"
 }
@@ -237,6 +250,23 @@ cmd_verify() {
         bad "cannot list CRDs"
     fi
 
+    step "platform"
+    got=$(kc -n cert-manager get deploy -o json 2> /dev/null | jq -r '[.items[]
+        | select((.status.availableReplicas // 0) >= .spec.replicas) | .metadata.name] | sort | join(" ")' || true)
+    [ "$got" = "cert-manager cert-manager-cainjector cert-manager-webhook" ] \
+        && ok "cert-manager, cainjector and webhook available" || bad "available cert-manager deployments: '$got'"
+    got=$(kc get ns cert-manager -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}' 2> /dev/null || true)
+    [ "$got" = "restricted" ] && ok "namespace cert-manager enforces Pod Security restricted" \
+        || bad "namespace cert-manager enforces '$got', want restricted"
+    got=$(kc get clusterissuer -o json 2> /dev/null | jq -r '[.items[]
+        | select(any(.status.conditions[]?; .type == "Ready" and .status == "True")) | .metadata.name] | sort | join(" ")' || true)
+    [ "$got" = "letsencrypt-prod letsencrypt-staging" ] \
+        && ok "ClusterIssuers letsencrypt-staging and letsencrypt-prod Ready" || bad "Ready ClusterIssuers: '$got'"
+    # decoded only inside jq, which prints a verdict, never the token
+    got=$(kc -n cert-manager get secret cloudflare-api-token -o json 2> /dev/null \
+        | jq -r '.data["api-token"] // "" | @base64d | if length > 0 and (test("\\s") | not) then "ok" else "bad" end' || true)
+    [ "$got" = "ok" ] && ok "Cloudflare token Secret present, no whitespace" || bad "Cloudflare token Secret missing or malformed"
+
     step "server hardening"
     got=$(node_ssh "$SERVER_IP" 'sudo k3s secrets-encrypt status' || true)
     case "$got" in
@@ -347,6 +377,57 @@ probe_tcp() {
     echo "$rc"
 }
 
+# helm_install <release> <chart dir> <namespace>: install or upgrade, wait until ready, and refuse the
+# result if the API server warned about Pod Security (a warning means the namespace label is the only
+# thing standing between the chart and a rejected pod).
+helm_install() {
+    local release=$1 chart=$2 namespace=$3 out
+    if ! out=$(helm --kubeconfig "$KUBE_DIR/$CLUSTER.yaml" --kube-context "px-$CLUSTER" upgrade --install \
+        "$release" "$chart" --namespace "$namespace" --wait --timeout 10m 2>&1); then
+        printf '%s\n' "$out" | sed 's/^/          /' >&2
+        die "helm could not install $release"
+    fi
+    case "$out" in
+        *PodSecurity*)
+            printf '%s\n' "$out" | sed 's/^/          /' >&2
+            die "$release triggered Pod Security warnings" ;;
+    esac
+    ok "$release installed in $namespace ($(printf '%s\n' "$out" | awk '/^REVISION:/ {print "revision " $2}'))"
+}
+
+cmd_platform() {
+    [ -f "$KUBE_DIR/$CLUSTER.yaml" ] || die "no kubeconfig for $CLUSTER yet (run: lab.sh kubeconfig $CLUSTER)"
+    local token_name token_file
+    # prod has its own Cloudflare token, so a leak from another cluster cannot stop prod's renewals
+    if [ "$CLUSTER" = prod ]; then token_name=prod; else token_name=nonprod; fi
+    token_file="$CF_TOKEN_DIR/$token_name.token"
+    [ -r "$token_file" ] || die "missing $token_file"
+
+    step "platform: namespaces"
+    kc apply -f "$PLATFORM_DIR/namespaces/" > /dev/null
+    ok "namespaces from platform/namespaces applied"
+
+    step "platform: Cloudflare token"
+    # A copy without the trailing newline, which would otherwise end up inside the Authorization header.
+    TOKEN_TMP=$(umask 077 && mktemp "$KUBE_DIR/.cf-token.XXXXXX")
+    tr -d '\r\n' < "$token_file" > "$TOKEN_TMP"
+    kc -n cert-manager create secret generic cloudflare-api-token --from-file=api-token="$TOKEN_TMP" \
+        --dry-run=client -o yaml | kc apply -f - > /dev/null
+    rm -f "$TOKEN_TMP"
+    TOKEN_TMP=""
+    ok "Secret cert-manager/cloudflare-api-token from $token_name.token"
+
+    step "platform: cert-manager"
+    helm dependency build "$PLATFORM_DIR/cert-manager" > /dev/null
+    helm_install cert-manager "$PLATFORM_DIR/cert-manager" cert-manager
+
+    step "platform: cluster-tls"
+    helm_install cluster-tls "$PLATFORM_DIR/cluster-tls" cert-manager
+    kc wait --for=condition=Ready clusterissuer --all --timeout=180s > /dev/null \
+        || die "the ClusterIssuers did not become Ready (ACME account registration with Let's Encrypt)"
+    ok "ClusterIssuers Ready"
+}
+
 cmd_up() {
     load_env
     step "backup"
@@ -369,6 +450,7 @@ cmd_up() {
     step "nodes Ready"
     wait_for_ready
     wait_for_system
+    cmd_platform
     cmd_verify
 }
 
@@ -404,7 +486,7 @@ main() {
     esac
     ROOT="$REPO_ROOT/terraform/clusters/$CLUSTER"
     local tool
-    for tool in tofu kubectl jq ssh python3; do
+    for tool in tofu kubectl helm jq ssh python3; do
         command -v "$tool" > /dev/null || die "$tool is not installed"
     done
     # every command but backup talks to Proxmox or the nodes over ssh
@@ -414,6 +496,7 @@ main() {
         backup) cmd_backup ;;
         up) cmd_up ;;
         kubeconfig) cmd_kubeconfig ;;
+        platform) cmd_platform ;;
         verify) cmd_verify ;;
         down) cmd_down ;;
         # Two statements, not `cmd_down && cmd_up`: inside an && list bash ignores set -e,

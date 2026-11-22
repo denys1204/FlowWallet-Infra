@@ -27,3 +27,6 @@ k3s.yaml
 
 # macOS
 .DS_Store
+
+# helm dependency build downloads the pinned charts here from Chart.lock
+platform/*/charts/

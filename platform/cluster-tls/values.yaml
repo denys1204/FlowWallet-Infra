@@ -1,0 +1,11 @@
+# DNS-01 challenges are answered in this Cloudflare zone, with the token that
+# lab.sh puts into the Secret below (never into git).
+dnsZone: px-lab.org
+cloudflareTokenSecret:
+  name: cloudflare-api-token
+  key: api-token
+
+# No ACME email: it is optional, and this repository is public.
+issuers:
+  letsencrypt-staging: https://acme-staging-v02.api.letsencrypt.org/directory
+  letsencrypt-prod: https://acme-v02.api.letsencrypt.org/directory

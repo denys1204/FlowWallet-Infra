@@ -1,0 +1,28 @@
+cert-manager:
+  crds:
+    enabled: true
+    # Uninstalling the chart never deletes the CRDs, and with them every Certificate.
+    keep: true
+
+  # Leader election in its own namespace instead of kube-system, so cert-manager
+  # needs no role there.
+  global:
+    leaderElection:
+      namespace: cert-manager
+
+  replicaCount: 1
+  resources:
+    requests: { cpu: 10m, memory: 48Mi }
+    limits: { memory: 128Mi }
+  webhook:
+    resources:
+      requests: { cpu: 10m, memory: 24Mi }
+      limits: { memory: 64Mi }
+  cainjector:
+    resources:
+      requests: { cpu: 10m, memory: 48Mi }
+      limits: { memory: 128Mi }
+  startupapicheck:
+    resources:
+      requests: { cpu: 10m, memory: 32Mi }
+      limits: { memory: 64Mi }

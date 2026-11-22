@@ -3,9 +3,9 @@
 Infrastructure for the FlowWallet lab, a Proxmox homelab that runs
 [FlowWallet](https://github.com/denys1204/FlowWallet) with separate dev, stage and prod
 environments. This repository holds the OpenTofu code for the lab's k3s clusters (the
-virtual machines and the k3s install on them) and `bootstrap/lab.sh`, which brings one
-cluster up and checks it. The platform add-ons join in a later step. Application
-manifests will live in a separate repository, FlowWallet-Config.
+virtual machines and the k3s install on them), the bring-up script `bootstrap/lab.sh`,
+and `platform/` with the add-ons every cluster gets: cert-manager now, Traefik next.
+Application manifests will live in a separate repository, FlowWallet-Config.
 
 ## Layout
 
@@ -14,6 +14,9 @@ terraform/base/                  cloud image + VM template, run rarely
 terraform/modules/k3s-cluster/   one k3s cluster: VMs, cloud-init, the pinned k3s install
 terraform/clusters/<name>/       one root and one state per cluster: mgmt, dev, stage, prod
 bootstrap/lab.sh                 bring up, check, tear down and rebuild one cluster
+platform/namespaces/             namespaces and their Pod Security level
+platform/cert-manager/           umbrella chart around cert-manager, pinned in Chart.lock
+platform/cluster-tls/            the cluster's Let's Encrypt issuers
 ```
 
 The split is deliberate. Rebuilding a cluster from scratch is the checkpoint that proves
@@ -47,6 +50,12 @@ ssh-add --apple-use-keychain ~/.ssh/id_ed25519
 source ~/.config/proxmox/tf.env
 ```
 
+cert-manager answers Let's Encrypt DNS-01 challenges through the Cloudflare API. The two
+API tokens live in `~/.config/px-lab/cloudflare/` (mode 0600): `prod.token` for prod and
+`nonprod.token` for the other clusters. Both may edit DNS records in the `px-lab.org`
+zone only. `lab.sh platform` copies the right one into a Secret in the cluster; it never
+enters git.
+
 ## State
 
 Each root keeps its state in a local `terraform.tfstate`. The file is gitignored and
@@ -73,6 +82,7 @@ bootstrap/lab.sh up dev                        # one cluster: apply, wait for k3
 |--------------|--------------|
 | `up`         | Backs up the state, runs `tofu apply`, waits for cloud-init and for every node to be Ready, fetches the kubeconfig and runs `verify` |
 | `kubeconfig` | Writes `~/.kube/px-lab/<cluster>.yaml` with the context `px-<cluster>` |
+| `platform`   | Creates the namespaces and the Cloudflare token Secret, then installs cert-manager and the Let's Encrypt issuers with Helm |
 | `verify`     | Checks the nodes, the system components, secrets encryption, Pod Security, where the tokens live, and that a node cannot reach the home network |
 | `down`       | Asks for the cluster name, backs up the state and runs `tofu destroy` |
 | `rebuild`    | `down`, then `up`. `time bootstrap/lab.sh rebuild dev` is the rebuild drill |
@@ -82,6 +92,22 @@ OpenTofu still asks before it applies or destroys anything. A plain
 `tofu -chdir=terraform/clusters/dev apply` works too; the script adds the waiting, the
 kubeconfig and the checks. It reads only the outputs that every cluster root exports in
 the same shape.
+
+## Platform
+
+`bootstrap/lab.sh platform <cluster>`, which `up` also runs, installs the add-ons in
+`platform/` with Helm:
+
+1. The namespaces from `platform/namespaces/`. cert-manager runs under the restricted Pod
+   Security profile, stricter than the cluster-wide baseline.
+2. The Secret `cert-manager/cloudflare-api-token`, from the cluster's Cloudflare token file.
+3. cert-manager v1.21.3 through the umbrella chart in `platform/cert-manager`.
+4. `platform/cluster-tls`: two ClusterIssuers, `letsencrypt-staging` and `letsencrypt-prod`,
+   which answer DNS-01 challenges in the `px-lab.org` zone. They carry no ACME email,
+   because the repository is public.
+
+The script stops when Helm reports a Pod Security warning. From stage 2, Argo CD installs
+the same charts from the same paths, with the same release names.
 
 ## Network
 
