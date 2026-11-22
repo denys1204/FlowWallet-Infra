@@ -38,10 +38,11 @@ stays on the node. A cluster with agents also gets an agent token, the only k3s 
 OpenTofu knows. A cluster without agents gets none, so its server accepts no joins;
 adding an agent to it later means rebuilding the server.
 
-Each node keeps part of its memory away from pods for the operating system and for k3s
-itself, and starts evicting pods before memory runs out. The values are starting points
-until the first clusters are measured. When the host shuts down, every node gives its
-pods a minute to stop, and Proxmox stops the agents before the servers.
+A server holds back 768 MiB from pods: 256 MiB for the operating system and 512 MiB for
+k3s. An agent holds back 512 MiB. The kubelet starts evicting pods once less than 200 MiB
+is free. A server running k3s, cert-manager and Traefik uses about 0.9 GiB, which leaves
+most of each node to applications. When the host shuts down, every node gives its pods a
+minute to stop, and Proxmox stops the agents before the servers.
 
 ## Credentials
 
@@ -91,9 +92,9 @@ bootstrap/lab.sh up dev                        # one cluster: apply, wait for k3
 | `up`         | Backs up the state, runs `tofu apply`, waits for cloud-init and for every node to be Ready, fetches the kubeconfig and runs `verify` |
 | `kubeconfig` | Writes `~/.kube/px-lab/<cluster>.yaml` with the context `px-<cluster>` |
 | `platform`   | Creates the namespaces and the Cloudflare token Secret, then installs cert-manager, Traefik, the Let's Encrypt issuers and the cluster's wildcard certificate with Helm |
-| `verify`     | Checks the nodes, the system components, secrets encryption, Pod Security, where the tokens live, the platform, HTTPS through Traefik, and that a node cannot reach the home network |
+| `verify`     | Checks the nodes, the system components, secrets encryption, Pod Security, where the tokens live, the platform, HTTPS through Traefik, that a node cannot reach the home network, and that the other clusters reach this one only from mgmt to the API server |
 | `down`       | Asks for the cluster name, backs up the state and runs `tofu destroy` |
-| `rebuild`    | `down`, then `up`. `time bootstrap/lab.sh rebuild dev` is the rebuild drill |
+| `rebuild`    | `down`, then `up`; `time bootstrap/lab.sh rebuild dev` is the [rebuild drill](#rebuild-drill) |
 | `backup`     | Copies the state files to `~/Documents/Backups/flowwallet-infra-state/` and compares them |
 
 OpenTofu still asks before it applies or destroys anything. A plain
@@ -138,6 +139,33 @@ work on the home network and over WireGuard. No port is forwarded from the inter
 
 The script stops when Helm reports a Pod Security warning. From stage 2, Argo CD installs
 the same charts from the same paths, with the same release names.
+
+## Rebuild drill
+
+`time bootstrap/lab.sh rebuild dev` destroys the dev cluster, builds it again from this
+repository and runs every check. On 2026-11-22 it took 5 min 13 s from the state backup
+to the last passing check:
+
+| Phase                                                        | Time       |
+|--------------------------------------------------------------|------------|
+| State backup and `tofu destroy`                              | 7 s        |
+| `tofu apply`, first boot, cloud-init, k3s, both nodes Ready  | 1 min 37 s |
+| cert-manager and Traefik                                     | 55 s       |
+| Wildcard certificate from Let's Encrypt production (DNS-01)  | 1 min 25 s |
+| `lab.sh verify`                                              | 1 min 9 s  |
+
+A rebuild replaces the VMs and their disks, the k3s tokens, the cluster CA (and so the
+kubeconfig), the SSH host keys, the wildcard certificate and everything stored in the
+cluster. The VM ids, addresses and pod and service ranges stay the same, since they come
+from the root. So do the DNS rewrites, the Cloudflare tokens on the workstation and the
+state backups. `lab.sh` removes the old kubeconfig and host keys and writes new ones. No
+cluster holds data yet, so a rebuild loses nothing. Once Argo CD manages the clusters, a
+rebuilt cluster has to be registered with it again, because its CA and service account
+token change.
+
+Every rebuild asks Let's Encrypt for a new production certificate, so the limit of five
+per week applies. Before a series of rebuilds, switch the cluster's issuer to staging as
+described under Platform.
 
 ## CI
 
