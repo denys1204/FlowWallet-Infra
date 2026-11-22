@@ -254,6 +254,20 @@ cmd_verify() {
         esac
     fi
 
+    step "graceful shutdown"
+    local delay
+    while read -r name ip; do
+        # single quotes on purpose: the $(...) runs on the node
+        # shellcheck disable=SC2016
+        got=$(node_ssh "$ip" 'systemd-inhibit --list --no-pager --no-legend; echo "max=$(busctl get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager InhibitDelayMaxUSec)"' || true)
+        delay=${got##*max=t }
+        case "$delay" in *[!0-9]* | "") delay="?" ;; *) delay="$((delay / 1000000))s" ;; esac
+        case "$got" in
+            *"Kubelet needs time to handle node shutdown"*) ok "$name: kubelet holds a shutdown delay (logind allows $delay)" ;;
+            *) bad "$name: no kubelet shutdown delay, so a host shutdown kills its pods (logind allows $delay)" ;;
+        esac
+    done <<< "$NODES"
+
     step "secrets outside the server"
     while read -r name ip; do
         [ "$ip" = "$SERVER_IP" ] && continue

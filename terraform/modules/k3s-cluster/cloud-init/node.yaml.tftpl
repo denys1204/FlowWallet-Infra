@@ -32,6 +32,15 @@ write_files:
     permissions: '0644'
     content: |
       ${indent(6, kubelet_config)}
+  # Graceful node shutdown needs logind to allow a delay longer than the kubelet's
+  # 60 s grace period. Debian's unattended-upgrades ships a drop-in that caps it at
+  # 30 s, and drop-ins apply in file-name order across /etc and /usr/lib, so this
+  # one is named to sort last. Without it the kubelet gives up on graceful shutdown.
+  - path: /etc/systemd/logind.conf.d/zz-px-lab-shutdown.conf
+    permissions: '0644'
+    content: |
+      [Login]
+      InhibitDelayMaxSec=70
 %{ if role == "server" ~}
   - path: /var/lib/rancher/k3s/server/psa.yaml
     permissions: '0600'
@@ -47,4 +56,6 @@ write_files:
 # how a bring-up script notices.
 runcmd:
   - systemctl enable --now qemu-guest-agent
+  # logind rereads its config on SIGHUP; it must see the new delay before the kubelet starts
+  - systemctl kill --signal=HUP systemd-logind
   - /usr/local/sbin/px-k3s-install
