@@ -30,3 +30,6 @@ k3s.yaml
 
 # helm dependency build downloads the pinned charts here from Chart.lock
 platform/*/charts/
+
+# tofu test copies a root's lock file into the module; the roots' lock files are the tracked ones
+terraform/modules/*/.terraform.lock.hcl

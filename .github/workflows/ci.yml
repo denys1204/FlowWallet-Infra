@@ -59,6 +59,93 @@ jobs:
 
       - run: python3 .github/scripts/check-cluster-roots.py
 
+  # The platform charts: pinned Helm, pinned chart content, lint, and a render
+  # with every cluster's values. Nothing here talks to a cluster.
+  platform:
+    runs-on: ubuntu-latest
+    env:
+      HELM_VERSION: 4.3.2
+      HELM_SHA256: d1c0278d46beab79582d7e50f5b3dc206944ba8e577cde618513fd07daa53983
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Helm
+        run: |
+          archive="$RUNNER_TEMP/helm.tar.gz"
+          curl -sSfL -o "$archive" "https://get.helm.sh/helm-v${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  $archive" | sha256sum -c -
+          tar -xzf "$archive" -C "$RUNNER_TEMP" linux-amd64/helm
+          echo "$RUNNER_TEMP/linux-amd64" >> "$GITHUB_PATH"
+
+      - name: Pull the pinned charts and check their content
+        run: |
+          helm dependency build platform/cert-manager
+          helm dependency build platform/traefik
+          (cd platform && sha256sum -c charts.sha256)
+
+      - name: Lint and render
+        run: |
+          helm lint platform/cert-manager platform/traefik
+          helm template cert-manager platform/cert-manager --namespace cert-manager > /dev/null
+          helm template traefik platform/traefik --namespace traefik > /dev/null
+          for values in platform/cluster-tls/values-*.yaml; do
+            helm lint platform/cluster-tls -f "$values"
+            helm template cluster-tls platform/cluster-tls --namespace cert-manager -f "$values" > /dev/null
+          done
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - run: shellcheck bootstrap/*.sh .github/scripts/*.sh
+
+  # The k3s pin in the module against the release on GitHub.
+  pins:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - run: .github/scripts/check-k3s-pins.sh
+
+  # The cloud-init user-data, rendered with mocked providers, and the install
+  # script it carries, rendered and shellchecked for both roles.
+  cloud-init:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.12.6
+          tofu_wrapper: false
+
+      # The module has no lock file of its own; the dev root's pins the same providers.
+      - name: Render the user-data with mocked providers
+        working-directory: terraform/modules/k3s-cluster
+        run: |
+          cp ../../clusters/dev/.terraform.lock.hcl .
+          tofu init -backend=false -input=false -lockfile=readonly
+          tofu test
+
+      - name: Shellcheck the rendered install script
+        working-directory: terraform/clusters/dev
+        run: |
+          tofu init -backend=false -input=false -lockfile=readonly
+          for role in server agent; do
+            echo "jsonencode(templatefile(\"../../modules/k3s-cluster/cloud-init/px-k3s-install.sh.tftpl\", { role = \"$role\", k3s_version = \"v1.36.6+k3s1\", k3s_sha256 = \"0\", k3s_install_sha256 = \"0\" }))" \
+              | tofu console | jq -r . | jq -r . > "$RUNNER_TEMP/install-$role.sh"
+            shellcheck "$RUNNER_TEMP/install-$role.sh"
+          done
+
   gitleaks:
     runs-on: ubuntu-latest
     env:

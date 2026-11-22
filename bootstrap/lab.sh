@@ -468,6 +468,14 @@ cmd_platform() {
     token_file="$CF_TOKEN_DIR/$token_name.token"
     [ -r "$token_file" ] || die "missing $token_file"
 
+    step "platform: charts"
+    # The chart versions are pinned in Chart.lock; the content is pinned here, so a re-pushed tag is refused.
+    helm dependency build "$PLATFORM_DIR/cert-manager" > /dev/null
+    helm dependency build "$PLATFORM_DIR/traefik" > /dev/null
+    (cd "$PLATFORM_DIR" && shasum -a 256 -c charts.sha256 > /dev/null) \
+        || die "a pulled chart does not match platform/charts.sha256"
+    ok "charts pulled and checked against platform/charts.sha256"
+
     step "platform: namespaces"
     kc apply -f "$PLATFORM_DIR/namespaces/" > /dev/null
     ok "namespaces from platform/namespaces applied"
@@ -483,11 +491,9 @@ cmd_platform() {
     ok "Secret cert-manager/cloudflare-api-token from $token_name.token"
 
     step "platform: cert-manager"
-    helm dependency build "$PLATFORM_DIR/cert-manager" > /dev/null
     helm_install cert-manager "$PLATFORM_DIR/cert-manager" cert-manager
 
     step "platform: traefik"
-    helm dependency build "$PLATFORM_DIR/traefik" > /dev/null
     helm_install traefik "$PLATFORM_DIR/traefik" traefik
 
     step "platform: cluster-tls"

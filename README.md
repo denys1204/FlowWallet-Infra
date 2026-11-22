@@ -139,6 +139,23 @@ work on the home network and over WireGuard. No port is forwarded from the inter
 The script stops when Helm reports a Pod Security warning. From stage 2, Argo CD installs
 the same charts from the same paths, with the same release names.
 
+## CI
+
+CI runs on every push to `main` and on every pull request. It never talks to Proxmox or
+to a cluster:
+
+- `fmt` and `tofu`: `tofu fmt -check` over all code, and `tofu validate` in the base root
+  and each cluster root.
+- `roots`: no VM id, address or network clashes across the four cluster roots.
+- `cloud-init`: `tofu test` renders the user-data of a server and an agent with mocked
+  providers and checks that it parses and writes the expected files. The install script
+  inside it is rendered for both roles and shellchecked.
+- `pins`: the k3s version and both sha256 values in the module match the release on GitHub.
+- `platform`: a pinned Helm pulls the charts, checks them against `platform/charts.sha256`,
+  then lints and renders them, cluster-tls once per `values-<cluster>.yaml`.
+- `shellcheck` over `bootstrap/` and `.github/scripts/`, and `gitleaks` over the whole
+  history.
+
 ## Network
 
 Nodes live on `10.2.0.0/24`, an isolated bridge that cannot open connections into
