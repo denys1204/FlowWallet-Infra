@@ -1,0 +1,8 @@
+# Traefik runs under the restricted Pod Security profile, like cert-manager.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: traefik
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

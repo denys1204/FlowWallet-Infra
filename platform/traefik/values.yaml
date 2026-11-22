@@ -1,0 +1,62 @@
+traefik:
+  deployment:
+    replicas: 1
+
+  # k3s ServiceLB answers on ports 80 and 443 of every node IP. Nothing forwards
+  # those ports from the internet, so the cluster names are reachable from the
+  # home network and over WireGuard only.
+  service:
+    spec:
+      type: LoadBalancer
+
+  ports:
+    web:
+      http:
+        redirections:
+          entryPoint:
+            to: websecure
+            scheme: https
+            permanent: true
+
+  # No dashboard: it would be an unauthenticated admin UI reachable from every lab VM.
+  api:
+    dashboard: false
+  ingressRoute:
+    dashboard:
+      enabled: false
+
+  global:
+    checkNewVersion: false
+    sendAnonymousUsage: false
+
+  # Refuse the fallback to default TLS options on a conflict (GHSA-g55h-rg46-x9c5).
+  core:
+    strictTLSOptions: true
+
+  providers:
+    kubernetesCRD:
+      allowCrossNamespace: false
+      allowExternalNameServices: false
+    kubernetesIngress:
+      allowExternalNameServices: false
+      publishedService:
+        enabled: true
+
+  ingressClass:
+    enabled: true
+    isDefaultClass: true
+
+  # Every TLS route without a certificate of its own gets the cluster's wildcard
+  # certificate, which cluster-tls asks cert-manager for. Applications need no
+  # certificate objects of their own.
+  tlsStore:
+    default:
+      defaultCertificate:
+        secretName: wildcard-tls
+
+  accessLog:
+    enabled: true
+
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { memory: 192Mi }

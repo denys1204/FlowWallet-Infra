@@ -4,7 +4,7 @@ Infrastructure for the FlowWallet lab, a Proxmox homelab that runs
 [FlowWallet](https://github.com/denys1204/FlowWallet) with separate dev, stage and prod
 environments. This repository holds the OpenTofu code for the lab's k3s clusters (the
 virtual machines and the k3s install on them), the bring-up script `bootstrap/lab.sh`,
-and `platform/` with the add-ons every cluster gets: cert-manager now, Traefik next.
+and `platform/` with the add-ons every cluster gets: cert-manager and Traefik.
 Application manifests will live in a separate repository, FlowWallet-Config.
 
 ## Layout
@@ -16,7 +16,9 @@ terraform/clusters/<name>/       one root and one state per cluster: mgmt, dev, 
 bootstrap/lab.sh                 bring up, check, tear down and rebuild one cluster
 platform/namespaces/             namespaces and their Pod Security level
 platform/cert-manager/           umbrella chart around cert-manager, pinned in Chart.lock
-platform/cluster-tls/            the cluster's Let's Encrypt issuers
+platform/traefik/                umbrella chart around Traefik, pinned in Chart.lock
+platform/cluster-tls/            Let's Encrypt issuers and the cluster's wildcard certificate
+platform/smoke/                  a throwaway whoami app that lab.sh verify deploys and removes
 ```
 
 The split is deliberate. Rebuilding a cluster from scratch is the checkpoint that proves
@@ -82,8 +84,8 @@ bootstrap/lab.sh up dev                        # one cluster: apply, wait for k3
 |--------------|--------------|
 | `up`         | Backs up the state, runs `tofu apply`, waits for cloud-init and for every node to be Ready, fetches the kubeconfig and runs `verify` |
 | `kubeconfig` | Writes `~/.kube/px-lab/<cluster>.yaml` with the context `px-<cluster>` |
-| `platform`   | Creates the namespaces and the Cloudflare token Secret, then installs cert-manager and the Let's Encrypt issuers with Helm |
-| `verify`     | Checks the nodes, the system components, secrets encryption, Pod Security, where the tokens live, and that a node cannot reach the home network |
+| `platform`   | Creates the namespaces and the Cloudflare token Secret, then installs cert-manager, Traefik, the Let's Encrypt issuers and the cluster's wildcard certificate with Helm |
+| `verify`     | Checks the nodes, the system components, secrets encryption, Pod Security, where the tokens live, the platform, HTTPS through Traefik, and that a node cannot reach the home network |
 | `down`       | Asks for the cluster name, backs up the state and runs `tofu destroy` |
 | `rebuild`    | `down`, then `up`. `time bootstrap/lab.sh rebuild dev` is the rebuild drill |
 | `backup`     | Copies the state files to `~/Documents/Backups/flowwallet-infra-state/` and compares them |
@@ -98,13 +100,28 @@ the same shape.
 `bootstrap/lab.sh platform <cluster>`, which `up` also runs, installs the add-ons in
 `platform/` with Helm:
 
-1. The namespaces from `platform/namespaces/`. cert-manager runs under the restricted Pod
-   Security profile, stricter than the cluster-wide baseline.
+1. The namespaces from `platform/namespaces/`. cert-manager and Traefik run under the
+   restricted Pod Security profile, stricter than the cluster-wide baseline.
 2. The Secret `cert-manager/cloudflare-api-token`, from the cluster's Cloudflare token file.
 3. cert-manager v1.21.3 through the umbrella chart in `platform/cert-manager`.
-4. `platform/cluster-tls`: two ClusterIssuers, `letsencrypt-staging` and `letsencrypt-prod`,
-   which answer DNS-01 challenges in the `px-lab.org` zone. They carry no ACME email,
-   because the repository is public.
+4. Traefik v3.7.17 (chart 42.3.1) through the umbrella chart in `platform/traefik`. One
+   replica answers on ports 80 and 443 of every node through k3s ServiceLB. HTTP redirects
+   permanently to HTTPS, the dashboard is off, and the cluster's wildcard certificate is
+   the default certificate.
+5. `platform/cluster-tls`: two ClusterIssuers, `letsencrypt-staging` and `letsencrypt-prod`,
+   which answer DNS-01 challenges in the `px-lab.org` zone, and a wildcard Certificate for
+   `*.<cluster>.lab.px-lab.org` from the issuer named in `values-<cluster>.yaml`. The
+   issuers carry no ACME email, because the repository is public.
+
+Applications need no certificate objects of their own: an Ingress for a name under
+`*.<cluster>.lab.px-lab.org` gets the wildcard certificate from Traefik. Application
+manifests use the standard Ingress resource, not Traefik's own CRDs, so the ingress
+controller stays replaceable.
+
+The cluster names resolve through a local DNS rewrite to the cluster's server, so they
+work on the home network and over WireGuard. No port is forwarded from the internet.
+`lab.sh verify` deploys the whoami app from `platform/smoke/`, calls
+`https://whoami.<cluster>.lab.px-lab.org` and removes the app again.
 
 The script stops when Helm reports a Pod Security warning. From stage 2, Argo CD installs
 the same charts from the same paths, with the same release names.

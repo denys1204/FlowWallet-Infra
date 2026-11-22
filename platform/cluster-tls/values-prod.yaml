@@ -1,0 +1,3 @@
+# The prod cluster: its wildcard certificate covers *.prod.lab.px-lab.org.
+cluster: prod
+issuer: letsencrypt-staging

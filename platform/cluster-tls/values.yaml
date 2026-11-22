@@ -1,3 +1,10 @@
+# Set per cluster in values-<cluster>.yaml.
+cluster: ""
+# letsencrypt-staging until the whole chain works, then letsencrypt-prod. Staging
+# certificates are not trusted, but its rate limits are generous.
+issuer: letsencrypt-staging
+labDomain: lab.px-lab.org
+
 # DNS-01 challenges are answered in this Cloudflare zone, with the token that
 # lab.sh puts into the Secret below (never into git).
 dnsZone: px-lab.org

@@ -29,6 +29,7 @@ KNOWN_HOSTS="$KUBE_DIR/known_hosts"
 BACKUP_ROOT="$HOME/Documents/Backups/flowwallet-infra-state"
 TF_ENV="$HOME/.config/proxmox/tf.env"
 CF_TOKEN_DIR="$HOME/.config/px-lab/cloudflare"
+LAB_DOMAIN="lab.px-lab.org"
 PLATFORM_DIR="$REPO_ROOT/platform"
 SSH_TIMEOUT=300     # seconds for a new VM to answer on ssh
 READY_TIMEOUT=600   # seconds for every node to report Ready after cloud-init
@@ -267,6 +268,8 @@ cmd_verify() {
         | jq -r '.data["api-token"] // "" | @base64d | if length > 0 and (test("\\s") | not) then "ok" else "bad" end' || true)
     [ "$got" = "ok" ] && ok "Cloudflare token Secret present, no whitespace" || bad "Cloudflare token Secret missing or malformed"
 
+    verify_ingress
+
     step "server hardening"
     got=$(node_ssh "$SERVER_IP" 'sudo k3s secrets-encrypt status' || true)
     case "$got" in
@@ -339,6 +342,60 @@ cmd_verify() {
     fi
 }
 
+# Traefik on the node IPs, the HTTP-to-HTTPS redirect, the wildcard certificate, and a request that goes
+# all the way through: AdGuard name, ServiceLB, Traefik, TLS, an Ingress and a pod.
+verify_ingress() {
+    local host="x.$CLUSTER.$LAB_DOMAIN" want got issuer cert insecure="" smoke_host="whoami.$CLUSTER.$LAB_DOMAIN"
+    step "ingress"
+    got=$(kc -n traefik get deploy traefik -o jsonpath='{.status.availableReplicas}' 2> /dev/null || true)
+    [ "${got:-0}" -ge 1 ] && ok "traefik available" || bad "traefik is not available"
+    want=$(printf '%s\n' "$NODES" | awk '{print $2}' | sort | tr '\n' ' ')
+    got=$(kc -n traefik get svc traefik -o jsonpath='{.status.loadBalancer.ingress[*].ip}' 2> /dev/null | tr ' ' '\n' | sort | tr '\n' ' ' || true)
+    [ "$got" = "$want" ] && ok "traefik answers on the node IPs: $got" || bad "traefik EXTERNAL-IP '$got', want '$want'"
+    got=$(python3 -c 'import socket, sys; print(socket.gethostbyname(sys.argv[1]))' "$host" 2> /dev/null || true)
+    [ "$got" = "$SERVER_IP" ] && ok "$host resolves to $SERVER_IP (AdGuard rewrite)" \
+        || bad "$host resolves to '$got', want $SERVER_IP: is this Mac using AdGuard (LAN or WireGuard)?"
+    # A permanent redirect: Traefik answers 301 to GET and 308 to other methods, which keeps the method.
+    got="$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 10 "http://$host/" 2> /dev/null || true)"
+    got="$got / $(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' -X POST --max-time 10 "http://$host/" 2> /dev/null || true)"
+    case "$got" in
+        "301 https://$host/ / 308 https://$host/") ok "http://$host redirects to https permanently (GET 301, POST 308)" ;;
+        *) bad "http://$host answered '$got', want GET 301 and POST 308 to https" ;;
+    esac
+    got=$(kc -n traefik get certificate wildcard -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2> /dev/null || true)
+    [ "$got" = "True" ] && ok "certificate traefik/wildcard Ready" || bad "certificate traefik/wildcard Ready='$got'"
+    cert=$(openssl s_client -connect "$SERVER_IP:443" -servername "$host" < /dev/null 2> /dev/null \
+        | openssl x509 -noout -issuer -text 2> /dev/null || true)
+    issuer=$(printf '%s\n' "$cert" | grep -m1 -i '^issuer' || true)
+    case "$cert" in
+        *"DNS:*.$CLUSTER.$LAB_DOMAIN"*) ok "port 443 serves the wildcard for *.$CLUSTER.$LAB_DOMAIN ($issuer)" ;;
+        *) bad "port 443 does not serve the wildcard certificate ($issuer)" ;;
+    esac
+    # A staging certificate is not trusted by design; production ones must pass curl's normal checks.
+    case "$issuer" in *STAGING*) insecure="-k" ;; esac
+
+    sed "s/CLUSTER/$CLUSTER/g" "$PLATFORM_DIR/smoke/whoami.yaml" | kc apply -f - > /dev/null
+    if kc -n smoke rollout status deploy/whoami --timeout=120s > /dev/null 2>&1; then
+        # Traefik answers 503 for a second or two after the pod is ready, until it sees the endpoints.
+        local tries=0 code=""
+        while :; do
+            got=$(curl -sS $insecure --max-time 5 -w '\n%{http_code}' "https://$smoke_host/" 2> /dev/null || true)
+            code=${got##*$'\n'}
+            case "$got" in *"Hostname: whoami-"*) break ;; esac
+            tries=$((tries + 1))
+            [ "$tries" -lt 15 ] || break
+            sleep 2
+        done
+        case "$got" in
+            *"Hostname: whoami-"*) ok "https://$smoke_host answers through Traefik${insecure:+ (staging certificate, so -k)}" ;;
+            *) bad "https://$smoke_host gave no whoami answer within 30 s (last HTTP status ${code:-none})" ;;
+        esac
+    else
+        bad "the smoke app did not start"
+    fi
+    kc delete namespace smoke --wait=true --timeout=120s > /dev/null 2>&1 || bad "could not delete the smoke namespace"
+}
+
 # The lab bridge drops every IPv6 frame. On a cluster with two nodes, show that a TCP connection to the
 # other node's link-local address fails while the same probe to the node's own address works.
 verify_ipv6() {
@@ -377,13 +434,14 @@ probe_tcp() {
     echo "$rc"
 }
 
-# helm_install <release> <chart dir> <namespace>: install or upgrade, wait until ready, and refuse the
+# helm_install <release> <chart dir> <namespace> [helm args]: install or upgrade, wait until ready, and refuse the
 # result if the API server warned about Pod Security (a warning means the namespace label is the only
 # thing standing between the chart and a rejected pod).
 helm_install() {
     local release=$1 chart=$2 namespace=$3 out
+    shift 3
     if ! out=$(helm --kubeconfig "$KUBE_DIR/$CLUSTER.yaml" --kube-context "px-$CLUSTER" upgrade --install \
-        "$release" "$chart" --namespace "$namespace" --wait --timeout 10m 2>&1); then
+        "$release" "$chart" --namespace "$namespace" --wait --timeout 10m "$@" 2>&1); then
         printf '%s\n' "$out" | sed 's/^/          /' >&2
         die "helm could not install $release"
     fi
@@ -421,11 +479,19 @@ cmd_platform() {
     helm dependency build "$PLATFORM_DIR/cert-manager" > /dev/null
     helm_install cert-manager "$PLATFORM_DIR/cert-manager" cert-manager
 
+    step "platform: traefik"
+    helm dependency build "$PLATFORM_DIR/traefik" > /dev/null
+    helm_install traefik "$PLATFORM_DIR/traefik" traefik
+
     step "platform: cluster-tls"
-    helm_install cluster-tls "$PLATFORM_DIR/cluster-tls" cert-manager
+    helm_install cluster-tls "$PLATFORM_DIR/cluster-tls" cert-manager -f "$PLATFORM_DIR/cluster-tls/values-$CLUSTER.yaml"
     kc wait --for=condition=Ready clusterissuer --all --timeout=180s > /dev/null \
         || die "the ClusterIssuers did not become Ready (ACME account registration with Let's Encrypt)"
     ok "ClusterIssuers Ready"
+    # DNS-01 through Cloudflare and Let's Encrypt; a first issuance takes one to two minutes
+    kc -n traefik wait --for=condition=Ready certificate/wildcard --timeout=300s > /dev/null \
+        || die "the wildcard certificate is not Ready (kubectl -n traefik describe certificate wildcard)"
+    ok "wildcard certificate *.$CLUSTER.$LAB_DOMAIN Ready"
 }
 
 cmd_up() {

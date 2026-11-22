@@ -1,0 +1,6 @@
+dependencies:
+- name: traefik
+  repository: oci://ghcr.io/traefik/helm
+  version: 42.3.1
+digest: sha256:f8b6b3baafc9291a394e55afcabe79df1c7abaad5ba18bdd5e9a4f3d02ff8be0
+generated: "2026-11-22T16:00:37.538473+01:00"

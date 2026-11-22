@@ -1,0 +1,74 @@
+# A throwaway web app for `lab.sh verify`: it answers on whoami.CLUSTER.lab.px-lab.org
+# through Traefik and the wildcard certificate. lab.sh fills in CLUSTER, applies it,
+# calls it and deletes the namespace again.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: smoke
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: whoami
+  namespace: smoke
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: whoami }
+  template:
+    metadata:
+      labels: { app: whoami }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: whoami
+          image: traefik/whoami:v1.12.0@sha256:c4717a8d1f0134a7444e24f881160e033991f23027c6c5a9a3f8fd22e70d1d44
+          args: ["--port", "8080"]
+          ports:
+            - containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { memory: 32Mi }
+          readinessProbe:
+            httpGet: { path: /, port: 8080 }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: whoami
+  namespace: smoke
+spec:
+  selector: { app: whoami }
+  ports:
+    - port: 80
+      targetPort: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: whoami
+  namespace: smoke
+spec:
+  rules:
+    - host: whoami.CLUSTER.lab.px-lab.org
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: whoami
+                port: { number: 80 }
+  tls:
+    - hosts: [whoami.CLUSTER.lab.px-lab.org]

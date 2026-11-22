@@ -1,0 +1,3 @@
+# The dev cluster: its wildcard certificate covers *.dev.lab.px-lab.org.
+cluster: dev
+issuer: letsencrypt-staging

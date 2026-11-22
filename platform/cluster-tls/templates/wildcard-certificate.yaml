@@ -1,0 +1,18 @@
+# One wildcard certificate per cluster. Certificate Transparency logs show only
+# *.<cluster>.lab.px-lab.org, never the names of single services.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard
+  namespace: traefik
+spec:
+  secretName: wildcard-tls
+  issuerRef:
+    kind: ClusterIssuer
+    name: {{ .Values.issuer }}
+  dnsNames:
+    - "*.{{ required "set cluster in values-<cluster>.yaml" .Values.cluster }}.{{ .Values.labDomain }}"
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
