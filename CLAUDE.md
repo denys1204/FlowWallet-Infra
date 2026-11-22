@@ -3,7 +3,8 @@
 OpenTofu for the FlowWallet Proxmox lab. `terraform/base` downloads the Debian 13 cloud image and builds VM
 template 9000; it runs rarely. `terraform/modules/k3s-cluster` describes one k3s cluster, and
 `terraform/clusters/{mgmt,dev,stage,prod}` are its four roots, one state each; each root is a destroy/rebuild
-target on its own. Later stages add `bootstrap/` (the bring-up script) and `platform/` (cluster add-ons).
+target on its own. `bootstrap/lab.sh` brings one cluster up, checks it and rebuilds it; a later step adds
+`platform/` (cluster add-ons).
 Application manifests belong in FlowWallet-Config, not here.
 
 ## The state files have no second copy
@@ -25,6 +26,8 @@ They are gitignored and there is no remote backend.
   the key has a passphrase. Run `ssh-add --apple-use-keychain ~/.ssh/id_ed25519` first, or the SSH step hangs.
 - `bpg/proxmox` is pinned to an exact version in `versions.tf` and the lock files. Upgrade it in a change of its
   own, after a state backup.
+- `bootstrap/lab.sh up`, `down` and `rebuild` run `tofu apply` or `tofu destroy`, so run them only when asked.
+  `verify`, `kubeconfig` and `backup` change nothing on Proxmox.
 
 ## Conventions
 
