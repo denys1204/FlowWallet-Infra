@@ -22,6 +22,7 @@ resource "proxmox_virtual_environment_vm" "template" {
   description = "Base template for the lab. Managed by OpenTofu - do not edit by hand."
   node_name   = var.node_name
   vm_id       = var.template_vm_id
+  pool_id     = proxmox_virtual_environment_pool.pool["Templates"].pool_id
   template    = true
   started     = false
 

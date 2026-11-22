@@ -10,7 +10,7 @@ Application manifests will live in a separate repository, FlowWallet-Config.
 ## Layout
 
 ```
-terraform/base/                  cloud image + VM template, run rarely
+terraform/base/                  cloud image, VM template and the Proxmox pools, run rarely
 terraform/modules/k3s-cluster/   one k3s cluster: VMs, cloud-init, the pinned k3s install
 terraform/clusters/<name>/       one root and one state per cluster: mgmt, dev, stage, prod
 bootstrap/lab.sh                 bring up, check, tear down and rebuild one cluster
@@ -24,6 +24,12 @@ platform/smoke/                  a throwaway whoami app that lab.sh verify deplo
 The split is deliberate. Rebuilding a cluster from scratch is the checkpoint that proves
 the setup works. It should not re-download a 300 MB image every time, and rebuilding dev
 must never touch mgmt, which will run Argo CD.
+
+`terraform/base` also owns the Proxmox pools: Home, Lab, Devbox and Templates. The
+cluster nodes join Lab and the template joins Templates through `pool_id`, so a rebuilt
+node lands in its pool again. Guests that OpenTofu does not manage go into their pool by
+hand. Apply `terraform/base` before the first cluster, because the cluster roots expect
+the Lab pool to exist.
 
 Each node installs a pinned k3s release on first boot. The cloud-init script checks the
 binary and `install.sh` against sha256 values committed in the module, and it never

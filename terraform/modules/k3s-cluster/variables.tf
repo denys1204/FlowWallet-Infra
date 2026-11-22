@@ -154,6 +154,12 @@ variable "node_name" {
   default     = "server"
 }
 
+variable "pool" {
+  description = "Proxmox pool of the nodes; terraform/base creates it, so apply base first"
+  type        = string
+  default     = "Lab"
+}
+
 variable "template_vm_id" {
   description = "Template produced by the base module"
   type        = number

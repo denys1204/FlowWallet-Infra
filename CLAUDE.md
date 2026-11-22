@@ -4,7 +4,8 @@ OpenTofu for the FlowWallet Proxmox lab. `terraform/base` downloads the Debian 1
 template 9000; it runs rarely. `terraform/modules/k3s-cluster` describes one k3s cluster, and
 `terraform/clusters/{mgmt,dev,stage,prod}` are its four roots, one state each; each root is a destroy/rebuild
 target on its own. `bootstrap/lab.sh` brings one cluster up, checks it and rebuilds it; `platform/` holds the
-cluster add-ons it installs with Helm.
+cluster add-ons it installs with Helm. `terraform/base` also owns the Proxmox pools; the cluster roots expect the
+Lab pool to exist.
 Application manifests belong in FlowWallet-Config, not here.
 
 ## The state files have no second copy

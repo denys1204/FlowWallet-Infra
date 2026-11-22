@@ -147,6 +147,8 @@ resource "proxmox_virtual_environment_vm" "node" {
   node_name   = var.node_name
   vm_id       = each.value.vm_id
   tags        = ["lab", "k3s", var.cluster]
+  # Membership lives here, not in the web UI, so a rebuilt node joins its pool again.
+  pool_id = var.pool
 
   clone {
     vm_id = var.template_vm_id
