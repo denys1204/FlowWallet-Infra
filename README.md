@@ -22,8 +22,14 @@ must never touch mgmt, which will run Argo CD.
 Each node installs a pinned k3s release on first boot. The cloud-init script checks the
 binary and `install.sh` against sha256 values committed in the module, and it never
 upgrades a node that already runs k3s. The server generates its own server token, which
-stays on the node. Agents join with a separate agent token, one per cluster. That token
-is the only k3s secret OpenTofu knows.
+stays on the node. A cluster with agents also gets an agent token, the only k3s secret
+OpenTofu knows. A cluster without agents gets none, so its server accepts no joins;
+adding an agent to it later means rebuilding the server.
+
+Each node keeps part of its memory away from pods for the operating system and for k3s
+itself, and starts evicting pods before memory runs out. The values are starting points
+until the first clusters are measured. When the host shuts down, every node gives its
+pods a minute to stop, and Proxmox stops the agents before the servers.
 
 ## Credentials
 
@@ -62,7 +68,8 @@ cd terraform/clusters/dev && tofu init && tofu apply   # per cluster, as often a
 
 Nodes live on `10.2.0.0/24`, an isolated bridge that cannot open connections into
 the home network. VM ids mirror the addresses: `221` is `10.2.0.21`. Each cluster has
-its own pod and service ranges, so addresses never overlap between clusters.
+its own pod and service ranges, so addresses never overlap between clusters. CI checks
+that no VM id, address or range clashes across the four roots.
 
 | Cluster | Host        | Address   | Role   | vCPU | RAM  | Pods          | Services      |
 |---------|-------------|-----------|--------|------|------|---------------|---------------|

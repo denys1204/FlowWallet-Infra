@@ -35,3 +35,6 @@ They are gitignored and there is no remote backend.
   tag. Bump all three together, in a change of their own.
 - The provider stores snippet content in the state in plain text. The agent token is the only secret allowed in
   cloud-init; anything else secret reaches the cluster another way.
+- Every cluster root re-exports the same outputs, and `lab.sh` reads only those. Change them in the module and in
+  all four roots together; `.github/scripts/check-cluster-roots.py` checks ids, addresses and networks across the
+  roots.

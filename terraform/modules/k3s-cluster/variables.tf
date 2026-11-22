@@ -55,6 +55,61 @@ variable "nodes" {
     condition     = length([for n in values(var.nodes) : n if n.role == "server"]) == 1
     error_message = "A cluster has exactly one server; there is no HA control plane in the lab."
   }
+
+  validation {
+    condition     = alltrue([for name in keys(var.nodes) : can(regex("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", name))])
+    error_message = "Node names become host names: lowercase letters, digits and hyphens, at most 63 characters."
+  }
+
+  validation {
+    condition     = alltrue([for n in values(var.nodes) : can(cidrhost("${n.ip}/32", 0))])
+    error_message = "Every node ip must be a plain IPv4 address such as 10.2.0.21."
+  }
+
+  validation {
+    condition     = length(distinct([for n in values(var.nodes) : n.ip])) == length(var.nodes)
+    error_message = "Two nodes share an ip."
+  }
+
+  validation {
+    condition     = length(distinct([for n in values(var.nodes) : n.vm_id])) == length(var.nodes)
+    error_message = "Two nodes share a vm_id."
+  }
+}
+
+variable "lab_cidr" {
+  description = "The isolated lab network; every node address must lie inside it"
+  type        = string
+  default     = "10.2.0.0/24"
+
+  validation {
+    condition     = can(cidrhost(var.lab_cidr, 0))
+    error_message = "Must be a CIDR block such as 10.2.0.0/24."
+  }
+}
+
+# Starting values, to be tuned from the RAM measured after the first bring-up.
+# The server reserves more for kube components because the API server, the
+# datastore and the controllers run inside its k3s process.
+variable "kubelet_memory" {
+  description = "Memory the kubelet keeps away from pods, and the free-memory level at which it starts evicting"
+  type = object({
+    system_reserved      = string
+    kube_reserved_server = string
+    kube_reserved_agent  = string
+    eviction_threshold   = string
+  })
+  default = {
+    system_reserved      = "256Mi"
+    kube_reserved_server = "512Mi"
+    kube_reserved_agent  = "256Mi"
+    eviction_threshold   = "200Mi"
+  }
+
+  validation {
+    condition     = alltrue([for v in values(var.kubelet_memory) : can(regex("^[0-9]+(Mi|Gi)$", v))])
+    error_message = "Use Kubernetes quantities in Mi or Gi, such as 256Mi."
+  }
 }
 
 # The pinned release. Bump the version and both checksums together, in a
@@ -64,18 +119,33 @@ variable "k3s_version" {
   description = "k3s release installed on every node"
   type        = string
   default     = "v1.36.6+k3s1"
+
+  validation {
+    condition     = can(regex("^v[0-9]+\\.[0-9]+\\.[0-9]+\\+k3s[0-9]+$", var.k3s_version))
+    error_message = "Use a k3s release tag such as v1.36.6+k3s1."
+  }
 }
 
 variable "k3s_sha256" {
   description = "sha256 of the k3s binary (the k3s line of sha256sum-amd64.txt in the release)"
   type        = string
   default     = "66ceb8e67edfa547195135d74783bfadc2ecc04a91059e90ae5f70a3dbc98c15"
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{64}$", var.k3s_sha256))
+    error_message = "Must be a sha256 in lowercase hex (64 characters)."
+  }
 }
 
 variable "k3s_install_sha256" {
   description = "sha256 of install.sh at the release tag (not the moving copy on get.k3s.io)"
   type        = string
   default     = "46177d4c99440b4c0311b67233823a8e8a2fc09693f6c89af1a7161e152fbfad"
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{64}$", var.k3s_install_sha256))
+    error_message = "Must be a sha256 in lowercase hex (64 characters)."
+  }
 }
 
 variable "node_name" {
