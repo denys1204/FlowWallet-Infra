@@ -68,6 +68,16 @@ def main() -> int:
             if net_a.overlaps(net_b):
                 errors.append(f"{name_a} {net_a} overlaps {name_b} {net_b}")
 
+    # The module lets one foreign host into every API server: the mgmt server. That
+    # address is a module default, so it must follow the mgmt root.
+    module_vars = (ROOTS.parent / "modules" / "k3s-cluster" / "variables.tf").read_text()
+    match = re.search(r'variable "mgmt_ip" \{.*?default\s*=\s*"([0-9.]+)"', module_vars, re.DOTALL)
+    mgmt_servers = [str(ip) for cluster, name, _, ip in nodes if cluster == "mgmt"]
+    if not match:
+        errors.append("cannot read the mgmt_ip default from the module")
+    elif match.group(1) not in mgmt_servers:
+        errors.append(f"the module's mgmt_ip {match.group(1)} is not a node of the mgmt root ({', '.join(mgmt_servers)})")
+
     for error in errors:
         print(f"error: {error}")
     if not errors:

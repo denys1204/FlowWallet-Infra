@@ -156,6 +156,20 @@ jobs:
             shellcheck "$RUNNER_TEMP/install-$role.sh"
           done
 
+      # nft --check parses the ruleset without loading it; one node of a normal
+      # cluster and the mgmt node, whose firewall has no 6443 exception.
+      - name: Check the rendered firewall with nft
+        run: |
+          sudo apt-get install -y -qq nftables > /dev/null
+          template="$GITHUB_WORKSPACE/terraform/modules/k3s-cluster/cloud-init/fw.nft.tftpl"
+          mkdir -p "$RUNNER_TEMP/render"
+          for args in 'node_ip = "10.2.0.21", peers = ["10.2.0.21", "10.2.0.22", "10.120.0.0/16"], allow_mgmt = true' \
+                      'node_ip = "10.2.0.11", peers = ["10.2.0.11", "10.110.0.0/16"], allow_mgmt = false'; do
+            echo "jsonencode(templatefile(\"$template\", { $args, mgmt_ip = \"10.2.0.11\", gateway = \"10.2.0.1\", lab_cidr = \"10.2.0.0/24\" }))" \
+              | tofu -chdir="$RUNNER_TEMP/render" console | jq -r . | jq -r . > "$RUNNER_TEMP/fw.nft"
+            sudo nft --check -f "$RUNNER_TEMP/fw.nft"
+          done
+
   gitleaks:
     runs-on: ubuntu-latest
     env:

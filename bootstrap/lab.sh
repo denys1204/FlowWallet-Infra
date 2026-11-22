@@ -333,6 +333,7 @@ cmd_verify() {
         esac
     done
     verify_ipv6
+    verify_firewall
 
     echo
     if [ "$FAILED" -eq 0 ]; then
@@ -431,6 +432,57 @@ verify_ipv6() {
         0) bad "IPv6 reaches $b_name ($other) across the lab bridge" ;;
         *) bad "IPv6 probe to $b_name failed in an unexpected way (exit $rc)" ;;
     esac
+}
+
+# The node firewall of this cluster: loaded on every node, Debian's own nftables.service left off, the other
+# clusters' nodes get no answer (mgmt only on the API server), and the home network cannot reach the kubelet.
+# The probes start on the other clusters' nodes, so they test this cluster's rules whatever the others run.
+verify_firewall() {
+    step "cluster firewall"
+    local name ip got table state other other_ip want port
+    while read -r name ip; do
+        got=$(node_ssh "$ip" 'sudo nft list table inet px_lab_fw > /dev/null 2>&1 && echo loaded || echo missing; systemctl is-enabled nftables 2> /dev/null || true' || true)
+        table=$(printf '%s\n' "$got" | sed -n 1p)
+        state=$(printf '%s\n' "$got" | sed -n 2p)
+        [ "$table" = loaded ] && ok "$name: table inet px_lab_fw loaded" || bad "$name: the px_lab_fw table is missing"
+        [ "$state" != enabled ] && ok "$name: nftables.service not enabled ($state)" \
+            || bad "$name: nftables.service is enabled; its config flushes every rule, k3s's included"
+    done <<< "$NODES"
+
+    for other in $CLUSTERS; do
+        [ "$other" = "$CLUSTER" ] && continue
+        other_ip=$(tofu -chdir="$REPO_ROOT/terraform/clusters/$other" output -raw server_ip 2> /dev/null) || continue
+        [ -n "$other_ip" ] || continue
+        for port in 6443 443 22; do
+            if [ "$other" = mgmt ] && [ "$port" = 6443 ]; then want=0; else want=124; fi
+            got=$(probe_tcp "$other_ip" "$SERVER_IP" "$port")
+            case "$want:$got" in
+                0:0) ok "$other ($other_ip) reaches $SERVER_IP:$port, as Argo CD will" ;;
+                124:124) ok "$other ($other_ip) gets no answer from $SERVER_IP:$port" ;;
+                *) bad "$other ($other_ip) to $SERVER_IP:$port gave exit $got, want $want" ;;
+            esac
+        done
+    done
+
+    got=$(local_probe "$SERVER_IP" 6443)
+    [ "$got" = 0 ] && ok "this Mac reaches $SERVER_IP:6443 (control)" || bad "this Mac cannot reach $SERVER_IP:6443 (exit $got)"
+    while read -r name ip; do
+        got=$(local_probe "$ip" 10250)
+        [ "$got" = 124 ] && ok "this Mac gets no answer from the kubelet on $name ($ip:10250)" \
+            || bad "the kubelet on $name ($ip:10250) answered this Mac (exit $got)"
+    done <<< "$NODES"
+}
+
+# local_probe <host> <port>: a 3-second TCP connect from this Mac; prints 0, 124 (no answer) or 1 (refused).
+local_probe() {
+    python3 -c 'import socket, sys
+s = socket.socket(); s.settimeout(3)
+try:
+    s.connect((sys.argv[1], int(sys.argv[2]))); print(0)
+except socket.timeout:
+    print(124)
+except OSError:
+    print(1)' "$1" "$2"
 }
 
 # probe_tcp <from-node-ip> <host> <port>: prints the exit code of a 3-second TCP connect run on that node.

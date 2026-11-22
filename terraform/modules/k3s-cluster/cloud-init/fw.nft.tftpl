@@ -1,0 +1,35 @@
+#!/usr/sbin/nft -f
+# px-lab node firewall: keeps the lab clusters apart. It lives in its own table, so the
+# rules k3s and kube-proxy write stay untouched. The add-then-delete pair makes a reload
+# replace the table instead of stacking a second copy.
+table inet px_lab_fw
+delete table inet px_lab_fw
+
+table inet px_lab_fw {
+    # This cluster: its nodes and its pod network.
+    set peers {
+        type ipv4_addr
+        flags interval
+        elements = { ${join(", ", peers)} }
+    }
+
+    # Priority -150 runs after conntrack (-200) and before the DNAT of kube-proxy and
+    # ServiceLB (-100), so the rules see the original destination, ports 80 and 443 and
+    # the NodePorts included.
+    chain prerouting {
+        type filter hook prerouting priority -150; policy accept;
+        ct state established,related accept
+        ip daddr != ${node_ip} accept
+        ip saddr @peers accept
+        # flannel VXLAN and the kubelet API serve the cluster itself, never the home network.
+        udp dport 8472 counter drop
+        tcp dport 10250 counter drop
+%{ if allow_mgmt ~}
+        # Argo CD in mgmt deploys into this cluster through its API server.
+        ip saddr ${mgmt_ip} tcp dport 6443 accept
+%{ endif ~}
+        ip saddr ${gateway} icmp type echo-request accept
+        # Every other lab host, that is, the other clusters.
+        ip saddr ${lab_cidr} counter drop
+    }
+}

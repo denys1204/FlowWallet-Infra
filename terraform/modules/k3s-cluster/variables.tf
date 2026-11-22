@@ -154,6 +154,19 @@ variable "node_name" {
   default     = "server"
 }
 
+# Argo CD runs in mgmt from stage 2; it is the only other lab host allowed to reach
+# a cluster's API server. CI checks that this matches the mgmt root's server.
+variable "mgmt_ip" {
+  description = "Address of the mgmt cluster's server, allowed through the node firewall to port 6443"
+  type        = string
+  default     = "10.2.0.11"
+
+  validation {
+    condition     = can(cidrhost("${var.mgmt_ip}/32", 0))
+    error_message = "Must be a plain IPv4 address."
+  }
+}
+
 variable "pool" {
   description = "Proxmox pool of the nodes; terraform/base creates it, so apply base first"
   type        = string

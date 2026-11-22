@@ -19,6 +19,8 @@ package_update: true
 packages:
   - qemu-guest-agent
   - curl
+  # nft only: Debian's nftables.service stays disabled, its config would flush k3s's rules.
+  - nftables
 
 write_files:
   # Holds the agent token, hence 0600.
@@ -41,6 +43,27 @@ write_files:
     content: |
       [Login]
       InhibitDelayMaxSec=70
+  # Node firewall: the other clusters cannot reach this node (see fw.nft.tftpl).
+  - path: /etc/px-lab/fw.nft
+    permissions: '0644'
+    content: |
+      ${indent(6, firewall)}
+  - path: /etc/systemd/system/px-lab-fw.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=px-lab node firewall (keeps the lab clusters apart)
+      Wants=network-pre.target
+      Before=network-pre.target k3s.service k3s-agent.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/sbin/nft -f /etc/px-lab/fw.nft
+      ExecReload=/usr/sbin/nft -f /etc/px-lab/fw.nft
+
+      [Install]
+      WantedBy=multi-user.target
 %{ if role == "server" ~}
   - path: /var/lib/rancher/k3s/server/psa.yaml
     permissions: '0600'
@@ -58,4 +81,7 @@ runcmd:
   - systemctl enable --now qemu-guest-agent
   # logind rereads its config on SIGHUP; it must see the new delay before the kubelet starts
   - systemctl kill --signal=HUP systemd-logind
+  # the firewall is up before k3s starts
+  - systemctl daemon-reload
+  - systemctl enable --now px-lab-fw.service
   - /usr/local/sbin/px-k3s-install

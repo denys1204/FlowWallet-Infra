@@ -128,7 +128,15 @@ resource "proxmox_virtual_environment_file" "user_data" {
       role           = each.value.role
       k3s_config     = trimspace(local.k3s_config[each.key])
       kubelet_config = trimspace(local.kubelet_config[each.value.role])
-      psa_config     = trimspace(local.psa_config)
+      firewall = trimspace(templatefile("${path.module}/cloud-init/fw.nft.tftpl", {
+        node_ip    = each.value.ip
+        peers      = concat([for n in values(var.nodes) : n.ip], [var.pod_cidr])
+        allow_mgmt = var.cluster != "mgmt"
+        mgmt_ip    = var.mgmt_ip
+        gateway    = var.gateway
+        lab_cidr   = var.lab_cidr
+      }))
+      psa_config = trimspace(local.psa_config)
       install_script = templatefile("${path.module}/cloud-init/px-k3s-install.sh.tftpl", {
         role               = each.value.role
         k3s_version        = var.k3s_version

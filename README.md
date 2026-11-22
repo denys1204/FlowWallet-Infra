@@ -170,3 +170,15 @@ that no VM id, address or range clashes across the four roots.
 | dev     | k3s-dev-2   | 10.2.0.22 | agent  | 4    | 3 GB |               |               |
 | stage   | k3s-stage-1 | 10.2.0.31 | server | 4    | 4 GB | 10.130.0.0/16 | 10.131.0.0/16 |
 | prod    | k3s-prod-1  | 10.2.0.41 | server | 4    | 4 GB | 10.140.0.0/16 | 10.141.0.0/16 |
+
+Each node loads its own nftables table, `inet px_lab_fw`, from `/etc/px-lab/fw.nft`
+through `px-lab-fw.service`, before k3s starts. The table drops traffic from other lab
+hosts, so one cluster cannot reach another. The one exception is the mgmt server, which
+may reach every other cluster's API server on port 6443, for Argo CD. The home network
+and WireGuard clients keep their access to the nodes, except for the kubelet (10250) and
+flannel (8472), which only the cluster itself uses.
+
+The table is separate from the rules that k3s and kube-proxy write and never flushes
+them. Debian's `nftables.service` stays disabled for the same reason: its configuration
+flushes the whole ruleset. `lab.sh verify` probes a cluster from the other clusters'
+nodes and from the machine it runs on.

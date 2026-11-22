@@ -49,5 +49,8 @@ They are gitignored and there is no remote backend.
   `platform/charts.sha256`, in the same change; `lab.sh platform` and CI refuse a chart whose content differs.
 - `tofu test` for the module runs from `terraform/modules/k3s-cluster` with a copy of the dev root's lock file
   (`cp ../../clusters/dev/.terraform.lock.hcl .`); that copy is gitignored.
+- Never enable Debian's `nftables.service` on a node, and never put `flush ruleset` into `fw.nft.tftpl`: both would
+  wipe the rules k3s and kube-proxy write. Like any cloud-init change, an edit to the firewall template replaces the
+  nodes.
 - The Cloudflare tokens live only in `~/.config/px-lab/cloudflare/`. `lab.sh` copies them into the cluster as a
   Secret; never print them or write them into a file in the repository.
